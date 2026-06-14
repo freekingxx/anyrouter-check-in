@@ -60,7 +60,33 @@
 
 ### 4. 多账号配置格式
 
-支持单个与多个账号配置，可选 `name` 和 `provider` 字段：
+支持两种认证方式，推荐使用**账号密码**，无需手动更新 cookies：
+
+#### 方式一：账号密码（推荐）
+
+脚本每次运行时自动通过 Playwright 登录获取最新 session，无需手动维护 cookies：
+
+```json
+[
+  {
+    "name": "我的主账号",
+    "username": "your_email@example.com",
+    "password": "your_password",
+    "api_user": "account1_api_user_id"
+  },
+  {
+    "name": "备用账号",
+    "provider": "agentrouter",
+    "username": "your_email@example.com",
+    "password": "your_password",
+    "api_user": "account2_api_user_id"
+  }
+]
+```
+
+#### 方式二：Cookies（向后兼容）
+
+若不方便提供账号密码，可继续使用 cookies，但 session 约 1 个月过期，过期后需重新获取：
 
 ```json
 [
@@ -84,8 +110,9 @@
 
 **字段说明**：
 
-- `cookies` (必需)：用于身份验证的 cookies 数据
 - `api_user` (必需)：用于请求头的 new-api-user 参数
+- `username` + `password`：账号密码认证（推荐，与 `cookies` 二选一）
+- `cookies`：Cookie 认证（与 `username`+`password` 二选一，session 约 1 个月过期）
 - `provider` (可选)：指定使用的服务商，默认为 `anyrouter`
 - `name` (可选)：自定义账号显示名称，用于通知和日志中标识账号
 
@@ -95,11 +122,7 @@
 - 如果未提供 `name` 字段，会使用 `Account 1`、`Account 2` 等默认名称
 - `anyrouter` 与 `agentrouter` 配置已内置，无需填写
 
-接下来获取 cookies 与 api_user 的值。
-
-通过 F12 工具，切到 Application 面板，拿到 session 的值，最好重新登录下，该值 1 个月有效期，但有可能提前失效，失效后报 401 错误，到时请再重新获取。
-
-![获取 cookies](./assets/request-session.png)
+接下来获取 api_user 的值。
 
 通过 F12 工具，切到 Network 面板，可以过滤下，只要 Fetch/XHR，找到带 `New-Api-User`，这个值正常是 5 位数，如果是负数或者个位数，正常是未登录。
 
@@ -129,10 +152,11 @@
 
 ## 注意事项
 
-- 请确保每个账号的 cookies 和 API User 都是正确的
+- 推荐使用账号密码（`username`+`password`）配置，脚本每次运行自动获取最新 session，无需手动维护 cookies
+- 若使用 cookies 方式，请确保 cookies 和 API User 都是正确的
 - 可以在 Actions 页面查看详细的运行日志
 - 支持部分账号失败，只要有账号成功签到，整个任务就不会失败
-- 报 401 错误，请重新获取 cookies，理论 1 个月失效，但有 Bug，详见 [#6](https://github.com/millylee/anyrouter-check-in/issues/6)
+- 使用 cookies 方式报 401 错误：请改用账号密码方式，或重新获取 cookies（理论 1 个月失效，但有 Bug，详见 [#6](https://github.com/millylee/anyrouter-check-in/issues/6)）
 - 请求 200，但出现 Error 1040（08004）：Too many connections，官方数据库问题，目前已修复，但遇到几次了，详见 [#7](https://github.com/millylee/anyrouter-check-in/issues/7)
 
 ## 配置示例

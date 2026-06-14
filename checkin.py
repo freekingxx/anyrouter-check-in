@@ -65,8 +65,97 @@ def parse_cookies(cookies_data):
 	return {}
 
 
-async def get_waf_cookies_with_playwright(account_name: str, login_url: str, required_cookies: list[str]):
-	"""使用 Playwright 获取 WAF cookies（隐私模式）"""
+async def _perform_login(page, account_name: str, username: str, password: str) -> dict[str, str]:
+	"""在 Playwright 页面中执行登录操作，返回登录后新增的 session cookies"""
+	print(f'[PROCESSING] {account_name}: Attempting login with credentials...')
+
+	try:
+		# 尝试填写用户名/邮箱字段（按优先级依次尝试常见选择器）
+		username_selectors = [
+			'input[type="email"]',
+			'input[name="username"]',
+			'input[placeholder*="邮箱"]',
+			'input[placeholder*="用户名"]',
+			'input[autocomplete="username"]',
+			'input[autocomplete="email"]',
+		]
+
+		username_filled = False
+		for selector in username_selectors:
+			try:
+				await page.fill(selector, username, timeout=2000)
+				username_filled = True
+				break
+			except Exception:
+				continue
+
+		if not username_filled:
+			print(f'[WARNING] {account_name}: Could not find username/email input field, login skipped')
+			return {}
+
+		# 填写密码
+		try:
+			await page.fill('input[type="password"]', password, timeout=3000)
+		except Exception as e:
+			print(f'[WARNING] {account_name}: Could not fill password field: {e}')
+			return {}
+
+		# 提交登录表单
+		submit_selectors = [
+			'button[type="submit"]',
+			'button:has-text("登录")',
+			'button:has-text("Sign In")',
+			'button:has-text("Login")',
+		]
+
+		submitted = False
+		for selector in submit_selectors:
+			try:
+				await page.click(selector, timeout=2000)
+				submitted = True
+				break
+			except Exception:
+				continue
+
+		if not submitted:
+			print(f'[WARNING] {account_name}: Could not find submit button, login skipped')
+			return {}
+
+		# 等待登录跳转完成
+		try:
+			await page.wait_for_load_state('networkidle', timeout=15000)
+		except Exception:
+			await page.wait_for_timeout(3000)
+
+		# 获取登录后新增的 session cookies
+		cookies = await page.context.cookies()
+		session_cookies = {}
+		for cookie in cookies:
+			cookie_name = cookie.get('name')
+			cookie_value = cookie.get('value')
+			if cookie_name in ('session', 'token', 'auth_token', 'user_token') and cookie_value:
+				session_cookies[cookie_name] = cookie_value
+
+		if session_cookies:
+			print(f'[SUCCESS] {account_name}: Login successful, obtained session cookies')
+		else:
+			print(f'[WARNING] {account_name}: Login attempted but no session cookies found (credentials may be incorrect)')
+
+		return session_cookies
+
+	except Exception as e:
+		print(f'[WARNING] {account_name}: Login attempt encountered an error: {e}')
+		return {}
+
+
+async def get_waf_cookies_with_playwright(
+	account_name: str,
+	login_url: str,
+	required_cookies: list[str],
+	username: str | None = None,
+	password: str | None = None,
+) -> dict[str, str] | None:
+	"""使用 Playwright 获取 WAF cookies，可选通过账号密码登录获取 session cookie"""
 	print(f'[PROCESSING] {account_name}: Starting browser to get WAF cookies...')
 
 	async with async_playwright() as p:
@@ -99,6 +188,15 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 				except Exception:
 					await page.wait_for_timeout(3000)
 
+				# 如果提供了账号密码，执行登录以获取新鲜的 session cookie
+				login_session_cookies: dict = {}
+				if username and password:
+					login_session_cookies = await _perform_login(page, account_name, username, password)
+					if not login_session_cookies:
+						print(f'[FAILED] {account_name}: Credential login failed, cannot proceed')
+						await context.close()
+						return None
+
 				cookies = await page.context.cookies()
 
 				waf_cookies = {}
@@ -121,7 +219,7 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 
 				await context.close()
 
-				return waf_cookies
+				return {**waf_cookies, **login_session_cookies}
 
 			except Exception as e:
 				print(f'[FAILED] {account_name}: Error occurred while getting WAF cookies: {e}')
@@ -151,20 +249,46 @@ def get_user_info(client, headers, user_info_url: str):
 		return {'success': False, 'error': f'Failed to get user info: {str(e)[:50]}...'}
 
 
-async def prepare_cookies(account_name: str, provider_config, user_cookies: dict) -> dict | None:
-	"""准备请求所需的 cookies（可能包含 WAF cookies）"""
-	waf_cookies = {}
+async def prepare_cookies(account_name: str, provider_config, account: AccountConfig) -> dict | None:
+	"""准备请求所需的 cookies（可能包含 WAF cookies 和登录 session）"""
+	use_login = bool(account.username and account.password)
 
 	if provider_config.needs_waf_cookies():
 		login_url = f'{provider_config.domain}{provider_config.login_path}'
-		waf_cookies = await get_waf_cookies_with_playwright(account_name, login_url, provider_config.waf_cookie_names)
-		if not waf_cookies:
+		result = await get_waf_cookies_with_playwright(
+			account_name,
+			login_url,
+			provider_config.waf_cookie_names,
+			username=account.username if use_login else None,
+			password=account.password if use_login else None,
+		)
+		if result is None:
 			print(f'[FAILED] {account_name}: Unable to get WAF cookies')
 			return None
+		all_cookies = result
+	elif use_login:
+		# 无 WAF 保护，仅使用 Playwright 执行登录（无 WAF cookie 要求）
+		login_url = f'{provider_config.domain}{provider_config.login_path}'
+		result = await get_waf_cookies_with_playwright(
+			account_name,
+			login_url,
+			[],  # 无需 WAF cookies
+			username=account.username,
+			password=account.password,
+		)
+		if not result:
+			print(f'[FAILED] {account_name}: Login failed')
+			return None
+		all_cookies = result
 	else:
 		print(f'[INFO] {account_name}: Bypass WAF not required, using user cookies directly')
+		all_cookies = {}
 
-	return {**waf_cookies, **user_cookies}
+	if use_login:
+		return all_cookies
+	else:
+		user_cookies = parse_cookies(account.cookies)
+		return {**all_cookies, **user_cookies}
 
 
 def execute_check_in(client, account_name: str, provider_config, headers: dict):
@@ -264,18 +388,13 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 	provider_config = app_config.get_provider(account.provider)
 	if not provider_config:
 		print(f'[FAILED] {account_name}: Provider "{account.provider}" not found in configuration')
-		return False, None
+		return False, None, None
 
 	print(f'[INFO] {account_name}: Using provider "{account.provider}" ({provider_config.domain})')
 
-	user_cookies = parse_cookies(account.cookies)
-	if not user_cookies:
-		print(f'[FAILED] {account_name}: Invalid configuration format')
-		return False, None
-
-	all_cookies = await prepare_cookies(account_name, provider_config, user_cookies)
+	all_cookies = await prepare_cookies(account_name, provider_config, account)
 	if not all_cookies:
-		return False, None
+		return False, None, None
 
 	client = httpx.Client(http2=True, timeout=30.0)
 
