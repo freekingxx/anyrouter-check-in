@@ -20,6 +20,7 @@ from utils.notify import notify
 load_dotenv()
 
 BALANCE_HASH_FILE = 'balance_hash.txt'
+SESSION_COOKIE_NAMES = ('session', 'token', 'auth_token', 'user_token')
 
 
 def load_balance_hash():
@@ -133,7 +134,7 @@ async def _perform_login(page, account_name: str, username: str, password: str) 
 		for cookie in cookies:
 			cookie_name = cookie.get('name')
 			cookie_value = cookie.get('value')
-			if cookie_name in ('session', 'token', 'auth_token', 'user_token') and cookie_value:
+			if cookie_name in SESSION_COOKIE_NAMES and cookie_value:
 				session_cookies[cookie_name] = cookie_value
 
 		if session_cookies:
@@ -276,7 +277,7 @@ async def prepare_cookies(account_name: str, provider_config, account: AccountCo
 			username=account.username,
 			password=account.password,
 		)
-		if not result:
+		if result is None:
 			print(f'[FAILED] {account_name}: Login failed')
 			return None
 		all_cookies = result
